@@ -439,7 +439,7 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 }
 
 func (a *apiServer) monitorCrashingPipeline(ctx context.Context, op *pipelineOp) {
-	defer a.cancelMonitor(op.name)
+	defer a.cancelCrashingMonitor(op.name)
 For:
 	for {
 		select {

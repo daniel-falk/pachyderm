@@ -115,6 +115,7 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 			return op.setPipelineState(pps.PipelineState_PIPELINE_PAUSED, "")
 		}
 		// trigger another event
+		op.stopCrashingPipelineMonitor()
 		return op.setPipelineState(pps.PipelineState_PIPELINE_RUNNING, "")
 	case pps.PipelineState_PIPELINE_RUNNING:
 		if !op.rcIsFresh() {
@@ -124,6 +125,7 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 			return op.setPipelineState(pps.PipelineState_PIPELINE_PAUSED, "")
 		}
 
+		op.stopCrashingPipelineMonitor()
 		op.startPipelineMonitor()
 		// default: scale up if pipeline start hasn't propagated to etcd yet
 		// Note: mostly this should do nothing, as this runs several times per job
@@ -135,8 +137,12 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 		if op.pipelineInfo.Stopped {
 			return op.setPipelineState(pps.PipelineState_PIPELINE_PAUSED, "")
 		}
-		// default: scale down if standby hasn't propagated to kube RC yet
+		// pipelines in standby shouldn't be able to crash (CRASHING is most like
+		// RUNNING)
+		op.stopCrashingPipelineMonitor()
+		// Make sure pipelineMonitor is running to pull it out of standby
 		op.startPipelineMonitor()
+		// default: scale down if standby hasn't propagated to kube RC yet
 		return op.scaleDownPipeline()
 	case pps.PipelineState_PIPELINE_PAUSED:
 		if !op.rcIsFresh() {
@@ -161,6 +167,8 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 		if err := op.finishPipelineOutputCommits(); err != nil {
 			return err
 		}
+		op.stopPipelineMonitor()
+		op.stopCrashingPipelineMonitor()
 		return op.deletePipelineResources()
 	case pps.PipelineState_PIPELINE_CRASHING:
 		if !op.rcIsFresh() {
@@ -171,6 +179,7 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 		}
 		// start a monitor to poll k8s and update us when it goes into a running state
 		op.startCrashingPipelineMonitor()
+		op.startPipelineMonitor()
 	}
 	return nil
 }
@@ -419,7 +428,6 @@ func (op *pipelineOp) startPipelineMonitor() {
 }
 
 func (op *pipelineOp) startCrashingPipelineMonitor() {
-	op.stopPipelineMonitor()
 	op.apiServer.monitorCancelsMu.Lock()
 	defer op.apiServer.monitorCancelsMu.Unlock()
 	if _, ok := op.apiServer.crashingMonitorCancels[op.name]; !ok {
