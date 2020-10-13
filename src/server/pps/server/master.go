@@ -276,7 +276,7 @@ func (a *apiServer) setPipelineState(ctx context.Context, pipeline string, state
 
 // transitionPipelineState is similar to setPipelineState, except that it sets
 // 'from' and logs a different trace
-func (a *apiServer) transitionPipelineState(ctx context.Context, pipeline string, from, to pps.PipelineState, reason string) (retErr error) {
+func (a *apiServer) transitionPipelineState(ctx context.Context, pipeline string, from []pps.PipelineState, to pps.PipelineState, reason string) (retErr error) {
 	span, ctx := tracing.AddSpanToAnyExisting(ctx,
 		"/pps.Master/TransitionPipelineState", "pipeline", pipeline,
 		"from-state", from, "to-state", to)
@@ -285,7 +285,7 @@ func (a *apiServer) transitionPipelineState(ctx context.Context, pipeline string
 		tracing.FinishAnySpan(span)
 	}()
 	return ppsutil.SetPipelineState(ctx, a.env.GetEtcdClient(), a.pipelines,
-		pipeline, &from, to, reason)
+		pipeline, from, to, reason)
 }
 
 func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *pps.PipelineInfo) {
@@ -331,8 +331,10 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 
 				if err := a.transitionPipelineState(pachClient.Ctx(),
 					pipelineInfo.Pipeline.Name,
-					pps.PipelineState_PIPELINE_RUNNING,
-					pps.PipelineState_PIPELINE_STANDBY, ""); err != nil {
+					[]pps.PipelineState{
+						pps.PipelineState_PIPELINE_RUNNING,
+						pps.PipelineState_PIPELINE_CRASHING,
+					}, pps.PipelineState_PIPELINE_STANDBY, ""); err != nil {
 
 					pte := &ppsutil.PipelineTransitionError{}
 					if errors.As(err, &pte) && pte.Current == pps.PipelineState_PIPELINE_PAUSED {
@@ -373,7 +375,7 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 
 						if err := a.transitionPipelineState(pachClient.Ctx(),
 							pipelineInfo.Pipeline.Name,
-							pps.PipelineState_PIPELINE_STANDBY,
+							[]pps.PipelineState{pps.PipelineState_PIPELINE_STANDBY},
 							pps.PipelineState_PIPELINE_RUNNING, ""); err != nil {
 
 							pte := &ppsutil.PipelineTransitionError{}
@@ -405,8 +407,10 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 
 						if err := a.transitionPipelineState(pachClient.Ctx(),
 							pipelineInfo.Pipeline.Name,
-							pps.PipelineState_PIPELINE_RUNNING,
-							pps.PipelineState_PIPELINE_STANDBY, ""); err != nil {
+							[]pps.PipelineState{
+								pps.PipelineState_PIPELINE_RUNNING,
+								pps.PipelineState_PIPELINE_CRASHING,
+							}, pps.PipelineState_PIPELINE_STANDBY, ""); err != nil {
 
 							pte := &ppsutil.PipelineTransitionError{}
 							if errors.As(err, &pte) && pte.Current == pps.PipelineState_PIPELINE_PAUSED {
@@ -455,7 +459,7 @@ For:
 		}
 		if workersUp {
 			if err := a.transitionPipelineState(ctx, op.name,
-				pps.PipelineState_PIPELINE_CRASHING,
+				[]pps.PipelineState{pps.PipelineState_PIPELINE_CRASHING},
 				pps.PipelineState_PIPELINE_RUNNING, ""); err != nil {
 
 				pte := &ppsutil.PipelineTransitionError{}
