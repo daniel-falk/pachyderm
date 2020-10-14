@@ -344,6 +344,7 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 		// collect all pipelines in etcd
 		if err := a.listPipelinePtr(pachClient, nil, 0,
 			func(pipeline string, listPI *pps.EtcdPipelineInfo) error {
+				log.Debugf("PPS master: polling pipeline %q", pipeline)
 				etcdPipelines[pipeline] = true
 				var curPI pps.EtcdPipelineInfo
 				_, err := col.NewSTM(ctx, a.env.GetEtcdClient(), func(stm col.STM) error {
@@ -366,6 +367,7 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 			a.monitorCancelsMu.Lock()
 			defer a.monitorCancelsMu.Unlock()
 			for pipeline := range a.monitorCancels {
+				log.Infof("PPS master: cleaning up orphaned resources for %q", pipeline)
 				if !etcdPipelines[pipeline] {
 					// This is also called by master() above, if it receives a Delete
 					// event from etcd. If this is changed, that should too. Note that
@@ -378,6 +380,7 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 			}
 			for pipeline := range a.crashingMonitorCancels {
 				if !etcdPipelines[pipeline] {
+					log.Infof("PPS master: cleaning up orphaned resources for %q", pipeline)
 					// This is also called by master(), see note immediately above
 					if err := a.deletePipelineResources(ctx, pipeline); err != nil {
 						log.Errorf("PPS master: pollPipelines could not delete pipeline resources for %q: %v", err)
