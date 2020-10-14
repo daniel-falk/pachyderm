@@ -70,9 +70,10 @@ func (a *apiServer) master() {
 		func() {
 			a.monitorCancelsMu.Lock()
 			defer a.monitorCancelsMu.Unlock()
-			var pollCtx context.Context
-			pollCtx, a.pollCancel = context.WithCancel(ctx)
-			go a.pollPipelines(pollCtx)
+			a.pollCancel = startMonitor(ctx, "pollPipelines",
+				func(ctx context.Context) {
+					a.pollPipelines(ctx)
+				})
 		}()
 
 		// TODO(msteffen) request only keys, since pipeline_controller.go reads
@@ -176,7 +177,12 @@ func (a *apiServer) master() {
 			}
 		}
 	}, backoff.NewInfiniteBackOff(), func(err error, d time.Duration) error {
-		// cancel all monitorPipeline and monitorCrashingPipeline goroutines
+		// cancel all monitorPipeline and monitorCrashingPipeline goroutines.
+		// Strictly speaking, this should be unnecessary, as the base context for
+		// all monitor goros is cancelled by 'defer cancel()' at the beginning of
+		// 'RetryNotify' above. However, these cancel calls also block until the
+		// monitor goros exit, ensuring that a leftover goro won't interfere with a
+		// subsequent iteration
 		a.monitorCancelsMu.Lock()
 		defer a.monitorCancelsMu.Unlock()
 		for _, c := range a.monitorCancels {
@@ -654,5 +660,25 @@ func (a *apiServer) makeCronCommits(pachClient *client.APIClient, in *pps.Input)
 
 		// set latestTime to the next time
 		latestTime = next
+	}
+}
+
+func startMonitor(parent context.Context, name string, f func(context.Context)) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		f(ctx)
+		close(done)
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+			return
+		case <-time.After(time.Minute):
+			// restart pod rather than permanently locking up the PPS master (which
+			// would break the PPS API)
+			panic(name + " blocked for over a minute after cancellation; restarting pod")
+		}
 	}
 }

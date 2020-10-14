@@ -425,14 +425,15 @@ func (op *pipelineOp) startPipelineMonitor() {
 	op.apiServer.monitorCancelsMu.Lock()
 	defer op.apiServer.monitorCancelsMu.Unlock()
 	if _, ok := op.apiServer.monitorCancels[op.name]; !ok {
-		// use context.Background because we expect this goro to run for the rest of
-		// pachd's lifetime
-		ctx, cancel := context.WithCancel(context.Background())
-		op.apiServer.monitorCancels[op.name] = cancel
-		go op.apiServer.sudo(op.apiServer.env.GetPachClient(ctx),
-			func(superUserClient *client.APIClient) error {
-				op.apiServer.monitorPipeline(superUserClient, op.pipelineInfo)
-				return nil
+		op.apiServer.monitorCancels[op.name] = startMonitor(op.pachClient.Ctx(),
+			"monitorPipeline for "+op.name, func(ctx context.Context) {
+				if err := op.apiServer.sudo(op.apiServer.env.GetPachClient(ctx),
+					func(superUserClient *client.APIClient) error {
+						op.apiServer.monitorPipeline(superUserClient, op.pipelineInfo)
+						return nil
+					}); err != nil {
+					log.Errorf("error monitoring %q: %v", op.name, err)
+				}
 			})
 	}
 }
@@ -441,9 +442,11 @@ func (op *pipelineOp) startCrashingPipelineMonitor() {
 	op.apiServer.monitorCancelsMu.Lock()
 	defer op.apiServer.monitorCancelsMu.Unlock()
 	if _, ok := op.apiServer.crashingMonitorCancels[op.name]; !ok {
-		ctx, cancel := context.WithCancel(context.Background())
-		op.apiServer.crashingMonitorCancels[op.name] = cancel
-		go op.apiServer.monitorCrashingPipeline(ctx, op)
+		op.apiServer.crashingMonitorCancels[op.name] = startMonitor(
+			op.pachClient.Ctx(), "monitorCrashingPipeline for "+op.name,
+			func(ctx context.Context) {
+				op.apiServer.monitorCrashingPipeline(ctx, op)
+			})
 	}
 }
 
