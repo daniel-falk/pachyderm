@@ -137,8 +137,8 @@ func (a *apiServer) step(pachClient *client.APIClient, pipeline string, keyVer, 
 		if op.pipelineInfo.Stopped {
 			return op.setPipelineState(pps.PipelineState_PIPELINE_PAUSED, "")
 		}
-		// pipelines in standby shouldn't be able to crash (CRASHING is most like
-		// RUNNING)
+		// pipelines in standby shouldn't be able to crash
+		// (CRASHING is most like RUNNING)
 		op.stopCrashingPipelineMonitor()
 		// Make sure pipelineMonitor is running to pull it out of standby
 		op.startPipelineMonitor()
