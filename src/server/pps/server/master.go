@@ -170,13 +170,17 @@ func (a *apiServer) master() {
 			}
 		}
 	}, backoff.NewInfiniteBackOff(), func(err error, d time.Duration) error {
-		// cancel all monitorPipeline goroutines
+		// cancel all monitorPipeline and monitorCrashingPipeline goroutines
 		a.monitorCancelsMu.Lock()
 		defer a.monitorCancelsMu.Unlock()
 		for _, c := range a.monitorCancels {
 			c()
 		}
+		for _, c := range a.crashingMonitorCancels {
+			c()
+		}
 		a.monitorCancels = make(map[string]func())
+		a.crashingMonitorCancels = make(map[string]func())
 		log.Errorf("PPS master: error running the master process: %v; retrying in %v", err, d)
 		return nil
 	})
