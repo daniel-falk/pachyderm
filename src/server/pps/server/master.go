@@ -336,7 +336,7 @@ func (a *apiServer) transitionPipelineState(ctx context.Context, pipeline string
 
 func (a *apiServer) pollPipelines(ctx context.Context) {
 	if err := backoff.RetryUntilCancel(ctx, func() error {
-		// Get the set of pipelines currently in etcd, and generate an etcd event
+		// 1. Get the set of pipelines currently in etcd, and generate an etcd event
 		// for each one (to trigger the pipeline controller)
 		etcdPipelines := map[string]bool{}
 		pachClient := a.env.GetPachClient(ctx)
@@ -363,7 +363,31 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 			return errors.Wrap(err, "error polling pipelines")
 		}
 
-		// Clean up any orphaned monitorPipeline and monitorCrashingPipeline goros
+		// 2. Clean up any orphaned RCs (because we can't generate etcd delete
+		// events for the master to process)
+		kc := a.env.GetKubeClient().CoreV1().ReplicationControllers(a.env.Namespace)
+		rcs, err := kc.List(metav1.ListOptions{
+			LabelSelector: "suite=pachyderm,pipelineName",
+		})
+		if err != nil {
+			return errors.Wrap(err, "error polling pipeline RCs")
+		}
+		for _, rc := range rcs.Items {
+			pipeline, ok := rc.Labels["pipelineName"]
+			if !ok {
+				return errors.New("'pipelineName' label missing from rc " + rc.Name)
+			}
+			if !etcdPipelines[pipeline] {
+				if err := a.deletePipelineResources(ctx, pipeline); err != nil {
+					// log the error but don't return it, so that one broken RC doesn't
+					// block pollPipelines
+					log.Errorf("could not delete resources for %q: %v", pipeline, err)
+				}
+			}
+		}
+
+		// 3. Clean up any orphaned monitorPipeline and monitorCrashingPipeline
+		// goros
 		a.cancelAllMonitorsAndCrashingMonitors(etcdPipelines)
 		return pollingComplete
 	}, backoff.NewConstantBackOff(10*time.Second), func(err error, d time.Duration) error {
