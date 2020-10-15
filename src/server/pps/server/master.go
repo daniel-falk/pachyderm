@@ -183,16 +183,10 @@ func (a *apiServer) master() {
 		// 'RetryNotify' above. However, these cancel calls also block until the
 		// monitor goros exit, ensuring that a leftover goro won't interfere with a
 		// subsequent iteration
+		a.cancelAllMonitorsAndCrashingMonitors(nil)
+		// cancel pollPipelines
 		a.monitorCancelsMu.Lock()
 		defer a.monitorCancelsMu.Unlock()
-		for _, c := range a.monitorCancels {
-			c()
-		}
-		for _, c := range a.crashingMonitorCancels {
-			c()
-		}
-		a.monitorCancels = make(map[string]func())
-		a.crashingMonitorCancels = make(map[string]func())
 		if a.pollCancel != nil {
 			a.pollCancel()
 			a.pollCancel = nil
@@ -201,6 +195,23 @@ func (a *apiServer) master() {
 		return nil
 	})
 	panic("internal error: PPS master has somehow exited. Restarting pod...")
+}
+
+func (a *apiServer) cancelAllMonitorsAndCrashingMonitors(leave map[string]bool) {
+	a.monitorCancelsMu.Lock()
+	defer a.monitorCancelsMu.Unlock()
+	for _, monitorMap := range []map[string]func(){a.monitorCancels, a.crashingMonitorCancels} {
+		remove := make([]string, 0, len(monitorMap))
+		for p, _ := range monitorMap {
+			if !leave[p] {
+				remove = append(remove, p)
+			}
+		}
+		for _, p := range remove {
+			monitorMap[p]()
+			delete(monitorMap, p)
+		}
+	}
 }
 
 func (a *apiServer) setPipelineFailure(ctx context.Context, pipelineName string, reason string) error {
@@ -362,32 +373,8 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 			continue // sleep and try again
 		}
 
-		// Check for orphaned monitorPipeline/monitorCrashingPipeline goros
-		func() {
-			a.monitorCancelsMu.Lock()
-			defer a.monitorCancelsMu.Unlock()
-			for pipeline := range a.monitorCancels {
-				log.Infof("PPS master: cleaning up orphaned resources for %q", pipeline)
-				if !etcdPipelines[pipeline] {
-					// This is also called by master() above, if it receives a Delete
-					// event from etcd. If this is changed, that should too. Note that
-					// this doesn't affect the EtcdPipelineInfo, so even if this somehow
-					// races with startup, it will be fixed by the next round of polling
-					if err := a.deletePipelineResources(ctx, pipeline); err != nil {
-						log.Errorf("PPS master: pollPipelines could not delete pipeline resources for %q: %v", err)
-					}
-				}
-			}
-			for pipeline := range a.crashingMonitorCancels {
-				if !etcdPipelines[pipeline] {
-					log.Infof("PPS master: cleaning up orphaned resources for %q", pipeline)
-					// This is also called by master(), see note immediately above
-					if err := a.deletePipelineResources(ctx, pipeline); err != nil {
-						log.Errorf("PPS master: pollPipelines could not delete pipeline resources for %q: %v", err)
-					}
-				}
-			}
-		}()
+		// Clean up any orphaned monitorPipeline and monitorCrashingPipeline goros
+		a.cancelAllMonitorsAndCrashingMonitors(etcdPipelines)
 	}
 }
 
