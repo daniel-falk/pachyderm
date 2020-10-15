@@ -30,6 +30,12 @@ func Retry(o Operation, b BackOff) error { return RetryNotify(o, b, nil) }
 // RetryNotify calls notify function with the error and wait duration
 // for each failed attempt before sleep.
 func RetryNotify(operation Operation, b BackOff, notify Notify) error {
+	return RetryUntilCancel(context.Background(), operation, b, notify)
+}
+
+// RetryUntilCancel is the same as RetryNotify, except that it will not retry if
+// the given context is canceled.
+func RetryUntilCancel(ctx context.Context, operation Operation, b BackOff, notify Notify) error {
 	var err error
 	var next time.Duration
 
@@ -37,6 +43,9 @@ func RetryNotify(operation Operation, b BackOff, notify Notify) error {
 	for {
 		if err = operation(); err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		if next = b.NextBackOff(); next == Stop {
@@ -48,20 +57,18 @@ func RetryNotify(operation Operation, b BackOff, notify Notify) error {
 				return err
 			}
 		}
+		if ctx.Err() != nil {
+			// Corner case: if 'b' is ZeroBackOff, and 'ctx' is done, then it's
+			// random which branch is chosen in the 'select' below. We can't guarantee
+			// that 'operation' is called with a live context, but this protects
+			// against this corner case.
+			return ctx.Err()
+		}
 
-		time.Sleep(next)
-	}
-}
-
-// RetryUntilCancel is the same as RetryNotify, except that it will not retry if
-// the given context is canceled.
-func RetryUntilCancel(ctx context.Context, operation Operation, b BackOff, notify Notify) error {
-	return RetryNotify(operation, b, func(err error, d time.Duration) error {
 		select {
+		case <-time.After(next):
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
-			return notify(err, d)
 		}
-	})
+	}
 }

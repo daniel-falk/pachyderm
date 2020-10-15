@@ -45,6 +45,10 @@ var (
 
 	zero     int32 // used to turn down RCs in scaleDownWorkersForPipeline
 	falseVal bool  // used to delete RCs in deletePipelineResources and restartPipeline()
+
+	// Used by pollPipelines to indicate a successful poll (essentially a
+	// non-error to be used with backoff)
+	pollingComplete = errors.New("pipeline polling complete")
 )
 
 // The master process is responsible for creating/deleting workers as
@@ -331,25 +335,9 @@ func (a *apiServer) transitionPipelineState(ctx context.Context, pipeline string
 }
 
 func (a *apiServer) pollPipelines(ctx context.Context) {
-	start := time.Now()
-	for {
-		// wait until at least 10s after last loop, so this doesn't ping too
-		// frequently (current cap: once/10s)
-		select {
-		case <-time.After(start.Add(10 * time.Second).Sub(time.Now())):
-			// Inner select: confirm that ctx is not done. It's possible that both
-			// time.After() and ctx.Done() are ready, and time.After() is randomly
-			// chosen over ctx.Done().
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-		case <-ctx.Done():
-			return
-		}
-		start = time.Now()
-
+	if err := backoff.RetryUntilCancel(ctx, func() error {
+		// Get the set of pipelines currently in etcd, and generate an etcd event
+		// for each one (to trigger the pipeline controller)
 		etcdPipelines := map[string]bool{}
 		pachClient := a.env.GetPachClient(ctx)
 		// collect all pipelines in etcd
@@ -367,14 +355,26 @@ func (a *apiServer) pollPipelines(ctx context.Context) {
 				} else {
 					log.Errorf("could not poll %q: %v", pipeline, err)
 				}
-				return nil // no error recovery to do here, just keep trying...
+				return nil // no error recovery here, just keep trying pipelines...
 			}); err != nil {
-			log.Errorf("error polling pipelines: %v", err)
-			continue // sleep and try again
+			// listPipelinePtr results (etcdPipelines) are used by the next two
+			// steps (RC cleanup and Monitor cleanup), so if that didn't work, sleep
+			// and try again
+			return errors.Wrap(err, "error polling pipelines")
 		}
 
 		// Clean up any orphaned monitorPipeline and monitorCrashingPipeline goros
 		a.cancelAllMonitorsAndCrashingMonitors(etcdPipelines)
+		return pollingComplete
+	}, backoff.NewConstantBackOff(10*time.Second), func(err error, d time.Duration) error {
+		if err != pollingComplete {
+			log.Errorf("error in pollPipelines: %v (retrying in: %v)", err, d)
+		}
+		return nil
+	}); err != nil {
+		if ctx.Err() == nil {
+			panic("pollPipelines is exiting prematurely which should not happen; restarting pod...")
+		}
 	}
 }
 
