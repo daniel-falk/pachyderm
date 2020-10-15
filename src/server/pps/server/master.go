@@ -295,7 +295,7 @@ func notifyCtx(ctx context.Context, name string) func(error, time.Duration) erro
 	return func(err error, d time.Duration) error {
 		select {
 		case <-ctx.Done():
-			return context.DeadlineExceeded
+			return ctx.Err()
 		default:
 			log.Errorf("error in %s: %v: retrying in: %v", name, err, d)
 		}
@@ -513,18 +513,10 @@ func (a *apiServer) monitorPipeline(pachClient *client.APIClient, pipelineInfo *
 							return err
 						}
 					case <-pachClient.Ctx().Done():
-						return context.DeadlineExceeded
+						return pachClient.Ctx().Err()
 					}
 				}
-			}, backoff.NewInfiniteBackOff(), func(err error, d time.Duration) error {
-				select {
-				case <-pachClient.Ctx().Done():
-					return context.DeadlineExceeded
-				default:
-					log.Printf("error in monitorPipeline: %v: retrying in: %v", err, d)
-				}
-				return nil
-			})
+			}, backoff.NewInfiniteBackOff(), notifyCtx(pachClient.Ctx(), "monitorPipeline/standby"))
 		})
 	}
 	if err := eg.Wait(); err != nil {
